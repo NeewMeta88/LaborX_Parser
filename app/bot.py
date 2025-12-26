@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import asyncio
+import html
 import uuid
 from collections import deque
+from datetime import datetime, timezone, timedelta, time
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.client.default import DefaultBotProperties
@@ -14,10 +18,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from .config import Config
 from .formatter import format_result_messages, format_ai_answer_messages
 from .openrouter import openrouter_generate
-from .proposal_prompt import build_filled_prompt
+from .openrouter import openrouter_get_free_daily_limit, openrouter_get_key
 from .parser import JobData, parser_loop
+from .proposal_prompt import build_filled_prompt
 from .state import RuntimeState
-
 
 router = Router()
 
@@ -33,6 +37,94 @@ def job_actions_kb(jid: str):
     kb.button(text="❌ Skip", callback_data=JobActionCb(act="skip", jid=jid).pack())
     kb.adjust(2)
     return kb.as_markup()
+
+
+def fmt_reset_ms(ms: int | None) -> str:
+    if not ms:
+        return "—"
+    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone()
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def fmt_bool(v: bool) -> str:
+    return "✅ Yes" if v else "❌ No"
+
+
+def next_utc_midnight_local_str() -> str:
+    now = datetime.now(timezone.utc)
+    next_midnight_utc = datetime.combine(now.date() + timedelta(days=1), time(0, 0), tzinfo=timezone.utc)
+    return next_midnight_utc.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def status_html(app: App, cfg: Config, *, daily_limit, key_info, err) -> str:
+    running = app.is_running()
+
+    last_href = app.state.last_seen_href or "—"
+    last_href = f"<code>{html.escape(last_href)}</code>" if last_href != "—" else "—"
+
+    last_error = html.escape(app.state.last_error or "—")
+    status_err = html.escape(err or "—")
+
+    free_reset_local = next_utc_midnight_local_str()
+
+    free_tier = "—"
+    limit_reset = "—"
+    if key_info and isinstance(key_info, dict):
+        d = key_info.get("data") or {}
+        free_tier = "✅ True" if d.get("is_free_tier") is True else (
+            "❌ False" if d.get("is_free_tier") is False else "—")
+        limit_reset = html.escape(str(d.get("limit_reset") or "—"))
+
+    key_limit_reset = limit_reset
+
+    if daily_limit is not None:
+        remaining = max(0, daily_limit - app.state.ai_used_today)
+        ai_line = (
+            f"Free remaining today: <code>{remaining}/{daily_limit}</code>\n"
+            f"Used today (bot): <code>{app.state.ai_used_today}</code>"
+        )
+    else:
+        ai_line = "Free remaining today: <code>—</code>\nUsed today (bot): <code>—</code>"
+
+    return "\n".join(
+        [
+            "<b>LaborX Parser Status</b>",
+            "",
+            "<b>Parser</b>",
+            "<blockquote>"
+            f"Running: {fmt_bool(running)}\n"
+            f"Sent: <code>{app.state.sent_count}</code>\n"
+            f"Last top href: {last_href}"
+            "</blockquote>",
+            "",
+            "<b>Cache</b>",
+            "<blockquote>"
+            f"Seen cache: <code>{len(app.state.seen_set)}/{cfg.seen_limit}</code>\n"
+            f"Cached jobs: <code>{len(app.jobs)}/{app.jobs_limit}</code>"
+            "</blockquote>",
+            "",
+            "<b>OpenRouter</b>",
+            "<blockquote>"
+            f"{ai_line}\n"
+            f"Free daily reset: <code>00:00 UTC (next {free_reset_local} local)</code>\n"
+            f"Key limit reset (spend limit): <code>{key_limit_reset}</code>\n"
+            f"Free tier: {free_tier}"
+            "</blockquote>",
+            "",
+            "<b>Errors</b>",
+            "<blockquote>"
+            f"Last error: <code>{last_error}</code>\n"
+            f"OpenRouter status error: <code>{status_err}</code>"
+            "</blockquote>",
+        ]
+    )
+
+
+def _ensure_ai_day(state):
+    today_utc = datetime.now(timezone.utc).date()
+    if state.ai_utc_day != today_utc:
+        state.ai_utc_day = today_utc
+        state.ai_used_today = 0
 
 
 class App:
@@ -66,6 +158,20 @@ class App:
             chat_id = self.state.target_chat_id
             if not chat_id:
                 continue
+
+            if self.state.startup_chat_id and self.state.startup_message_id:
+                try:
+                    await bot.edit_message_text(
+                        chat_id=self.state.startup_chat_id,
+                        message_id=self.state.startup_message_id,
+                        text="✅ Monitoring started. I’ll send new job listings here.",
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    pass
+                finally:
+                    self.state.startup_chat_id = None
+                    self.state.startup_message_id = None
 
             parts = format_result_messages(job)
             jid = self._remember_job(job)
@@ -118,7 +224,9 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             app.sender_task = asyncio.create_task(app.sender_loop(bot))
 
         app.parser_task = asyncio.create_task(parser_loop(cfg, app.state, app.queue, app.stop_event))
-        await message.answer("Parser started. I’ll send new job listings here.")
+        m = await message.answer("⏳ Starting… getting initial data from LaborX. Please wait…")
+        app.state.startup_chat_id = m.chat.id
+        app.state.startup_message_id = m.message_id
 
     @router.message(Command("stop"))
     async def cmd_stop(message: Message):
@@ -131,18 +239,26 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
 
     @router.message(Command("status"))
     async def cmd_status(message: Message):
-        running = app.is_running()
-        await message.answer(
-            "\n".join(
-                [
-                    f"Running: {running}",
-                    f"Sent: {app.state.sent_count}",
-                    f"Last top href: {app.state.last_seen_href}",
-                    f"Seen cache size: {len(app.state.seen_set)} (limit {cfg.seen_limit})",
-                    f"Cached jobs: {len(app.jobs)} (limit {app.jobs_limit})",
-                    f"Last error: {app.state.last_error or '—'}",
-                ]
-            )
+        progress = await message.answer("⏳ Getting status…")
+
+        today_utc = datetime.now(timezone.utc).date()
+        if app.state.ai_utc_day != today_utc:
+            app.state.ai_utc_day = today_utc
+            app.state.ai_used_today = 0
+
+        daily_limit = None
+        key_info = None
+        err = None
+
+        try:
+            daily_limit = await openrouter_get_free_daily_limit(cfg)
+            key_info = await openrouter_get_key(cfg)
+        except Exception as e:
+            err = str(e)
+
+        await progress.edit_text(
+            status_html(app, cfg, daily_limit=daily_limit, key_info=key_info, err=err),
+            disable_web_page_preview=True
         )
 
     @router.callback_query(JobActionCb.filter(F.act == "skip"))
@@ -167,7 +283,13 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
 
         job = app.jobs.get(callback_data.jid)
         html_text = msg.html_text or msg.text or ""
-        await msg.edit_text(_append_status(html_text, "✅ Accepted"), reply_markup=None, disable_web_page_preview=True)
+
+        accepted_text = _append_status(html_text, "✅ Accepted")
+        await msg.edit_text(
+            accepted_text + "\n⏳ Generating reply…",
+            reply_markup=None,
+            disable_web_page_preview=True
+        )
 
         if job is None:
             await query.answer("Job data not found (cache expired)")
@@ -177,7 +299,10 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
 
         try:
             prompt = build_filled_prompt(job, app.cfg.portfolio_url)
-            answer = await openrouter_generate(prompt, app.cfg, reasoning_enabled=False)
+            answer = await openrouter_generate(prompt, app.cfg, state=app.state, reasoning_enabled=False)
+
+            _ensure_ai_day(app.state)
+            app.state.ai_used_today += 1
 
             for i, text in enumerate(format_ai_answer_messages(job, answer)):
                 if i == 0:
@@ -190,9 +315,21 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
                     )
                 await asyncio.sleep(0.2)
 
-        except Exception as e:
-            await msg.reply(f"OpenRouter error: {e}")
+            await msg.edit_text(
+                accepted_text + "\n✅ Reply sent",
+                reply_markup=None,
+                disable_web_page_preview=True
+            )
 
+
+        except Exception as e:
+            await msg.edit_text(
+                accepted_text + "\n❗ OpenRouter error",
+                reply_markup=None,
+                disable_web_page_preview=True
+
+            )
+            await msg.reply(f"OpenRouter error: {e}")
         finally:
             app._forget_job(callback_data.jid)
 

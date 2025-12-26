@@ -1,9 +1,4 @@
-import html
-from typing import List
-
-from .formatter import TG_LIMIT
 from .parser import JobData
-
 
 PROMPT_TEMPLATE = """You are a freelance proposal writer for LaborX. Write a short, client-facing reply in ENGLISH.
 
@@ -29,10 +24,12 @@ RULES:
 - No long intros, no generic “benefits of working with me”, no separators like "====".
 - Use specifics from DESCRIPTION (stack, deliverables, constraints) but compress them into 1 sentence.
 - Do NOT list every bullet from DESCRIPTION. Mention only 1–2 key outcomes + 1–2 key constraints.
+- Use first-person singular only ("I", "my"). Do NOT use "we", "our", or "us".
 - If DESCRIPTION mentions a niche chain/tech and you’re not fully sure, position it safely as:
   "I can deliver the UI + deployment first and keep the structure ready for live data integration."
 - Mention timeline awareness using {{DAYS}} and/or {{DEADLINE}} in ONE short sentence.
 - Avoid repeating the same opening in the first two sentences. Sentence 2 must NOT start with "I can". Prefer: "Timeline:", "Timing:", or "Schedule:".
+- Sentence 2 must start with "Timeline:" and use one of these patterns: "Timeline: MVP in {{DAYS}} {{DEADLINE}}." or "Timeline: Delivery in {{DAYS}} {{DEADLINE}}."
 - Sentence 1 should not always start with "I can". Use varied starts like: "I’d build..." or "I can help by...".
 - Milestones format: "Day 1 - ...", "Day 2 - ...", etc. One line per day. No extra sub-bullets.
 - Questions must be strictly necessary for scope/acceptance/deployment access.
@@ -53,7 +50,7 @@ RULES:
 OUTPUT STRUCTURE (exact order):
 1) 1 sentence: confirm understanding (1–2 key outcomes) based on DESCRIPTION.
 2) Add exactly one blank line.
-3) 1 sentence starting with "Timeline:" that confirms timing using {{DAYS}} and/or {{DEADLINE}}. Do not start this sentence with "I can".
+3) 1 sentence starting with "Timeline:" that confirms timing using {{DAYS}} and/or {{DEADLINE}}.
 4) Add exactly one blank line.
 5) Day-by-day plan for {{DAYS}} (one line per day).
 6) Add exactly one blank line.
