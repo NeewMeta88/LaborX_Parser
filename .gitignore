@@ -1,0 +1,61 @@
+# ----------------------------
+# Python
+# ----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ----------------------------
+# Environment / secrets
+# ----------------------------
+.env
+.env.*
+!.env.example
+
+# ----------------------------
+# Playwright / browser profile (твоя папка)
+# ----------------------------
+laborx_profile/
+**/laborx_profile/
+
+# Playwright browsers cache (иногда создаётся)
+.ms-playwright/
+playwright/.cache/
+
+# ----------------------------
+# Logs / runtime files
+# ----------------------------
+*.log
+logs/
+*.pid
+
+# ----------------------------
+# OS files
+# ----------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ----------------------------
+# IDEs
+# ----------------------------
+.idea/
+.vscode/
+*.iml
+
+# ----------------------------
+# Build / dist
+# ----------------------------
+build/
+dist/
+*.egg-info/
