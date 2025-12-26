@@ -21,6 +21,6 @@ def load_config() -> Config:
 
     portfolio_url = os.environ.get("PORTFOLIO_URL")
     if not portfolio_url:
-        raise RuntimeError("Не задан PORTFOLIO_URL в env")
+        raise RuntimeError("PORTFOLIO_URL is not set in the environment.")
 
     return Config(bot_token=token, portfolio_url=portfolio_url)

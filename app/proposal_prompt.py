@@ -22,7 +22,7 @@ Read the DESCRIPTION carefully and produce a concise reply that:
 2) Proposes a day-by-day milestone plan that fits exactly into the number of days in {{DAYS}}.
 3) Asks ONLY the minimum essential questions required to finalize milestones (max 3).
 4) Ends with this exact line (verbatim):
-"If you have any questions, feel free to reach out — I’ll gladly clarify."
+"If you have any questions, feel free to reach out - I’ll gladly clarify."
 
 RULES:
 - Keep it short: 90–140 words max.
@@ -32,24 +32,43 @@ RULES:
 - If DESCRIPTION mentions a niche chain/tech and you’re not fully sure, position it safely as:
   "I can deliver the UI + deployment first and keep the structure ready for live data integration."
 - Mention timeline awareness using {{DAYS}} and/or {{DEADLINE}} in ONE short sentence.
-- Milestones format: "Day 1 — ...", "Day 2 — ...", etc. One line per day. No extra sub-bullets.
+- Avoid repeating the same opening in the first two sentences. Sentence 2 must NOT start with "I can". Prefer: "Timeline:", "Timing:", or "Schedule:".
+- Sentence 1 should not always start with "I can". Use varied starts like: "I’d build..." or "I can help by...".
+- Milestones format: "Day 1 - ...", "Day 2 - ...", etc. One line per day. No extra sub-bullets.
 - Questions must be strictly necessary for scope/acceptance/deployment access.
   Examples: mockup link, data source/format, deployment target + DNS access.
 - Always include a single line "Portfolio: {{PORTFOLIO_URL}}" right before the required closing line.
+- Add exactly one blank line between the "Portfolio: {{PORTFOLIO_URL}}" line and the required closing line (do not place them directly next to each other).
 - Ask up to 3 questions. If there is only 1, use the header "A quick question:" (singular). If there are 2–3, use either "A couple of quick questions:" or "A few quick questions:" (plural).
 - If no questions are strictly necessary, still ask exactly 1 best question and use "A quick question:".
+- Do NOT use the long dash character (—) anywhere. Use a normal hyphen "-" only.
+- Any lists must use either numeric format "1. 2. 3." or letter format "a) b) c)". Do not use bullet points.
+- Formatting: add exactly one blank line between logical blocks:
+  (a) sentence 1 and sentence 2
+  (b) sentence 2 and the Day-by-day plan
+  (c) the Day-by-day plan and the questions header
+  (d) the last question and the Portfolio line
+  (e) the Portfolio line and the required closing line (already required)
 
+OUTPUT FORMAT:
+- Wrap the entire final reply in triple backticks (``` ... ```), so it can be copied easily.
+- Do not output anything outside the triple backticks.
 
 OUTPUT STRUCTURE (exact order):
 1) 1 sentence: confirm understanding (1–2 key outcomes) based on DESCRIPTION.
-2) 1 sentence: confirm timeline ({{DAYS}} / {{DEADLINE}}).
-3) Day-by-day plan for {{DAYS}}.
-4) Use the header based on the number of questions:
-   - 1 question → "A quick question:"
-   - 2–3 questions → "A couple of quick questions:" or "A few quick questions:"
-   Then list the questions as bullets (max 3).
-5) Add one line: "Portfolio: {{PORTFOLIO_URL}}"
-6) The required closing line above (exact text).
+2) Add exactly one blank line.
+3) 1 sentence starting with "Timeline:" that confirms timing using {{DAYS}} and/or {{DEADLINE}}. Do not start this sentence with "I can".
+4) Add exactly one blank line.
+5) Day-by-day plan for {{DAYS}} (one line per day).
+6) Add exactly one blank line.
+7) Use the header based on the number of questions:
+   a) 1 question -> "A quick question:"
+   b) 2–3 questions -> "A couple of quick questions:" or "A few quick questions:"
+   Then list the questions in numeric format (max 3).
+8) Add exactly one blank line.
+9) Add one line: "Portfolio: {{PORTFOLIO_URL}}"
+10) Add exactly one blank line.
+11) The required closing line above (exact text).
 
 Now write the reply.
 """
