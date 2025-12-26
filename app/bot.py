@@ -48,7 +48,7 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
         app.state.target_chat_id = message.chat.id
 
         if app.is_running():
-            await message.answer("Уже запущено. /status — статус, /stop — остановить.")
+            await message.answer("Already running. /status, /stop.")
             return
 
         app.stop_event.clear()
@@ -64,11 +64,11 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
     @router.message(Command("stop"))
     async def cmd_stop(message: Message):
         if not app.is_running():
-            await message.answer("Парсер не запущен. /start")
+            await message.answer("Parser is not started yet. /start")
             return
 
         app.stop_event.set()
-        await message.answer("Останавливаю…")
+        await message.answer("Stopping…")
 
     @router.message(Command("status"))
     async def cmd_status(message: Message):
