@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class Config:
     bot_token: str
     list_url: str = "https://laborx.com/jobs"
-    interval_seconds: int = 10
+    interval_seconds: int = 600
     max_list_items: int = 5
     seen_limit: int = 50
     headless: bool = True

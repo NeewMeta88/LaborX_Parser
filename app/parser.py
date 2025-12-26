@@ -9,7 +9,7 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 from .formatter import format_result_messages
 
 LIST_URL = "https://laborx.com/jobs"
-INTERVAL_SECONDS = 10
+INTERVAL_SECONDS = 600
 MAX_LIST_ITEMS = 5
 SEEN_LIMIT = 50
 
