@@ -6,7 +6,6 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message
-from aiohttp import ClientSession
 from aiohttp.client import ClientTimeout
 
 from .config import Config
@@ -45,7 +44,8 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
         sock_connect=30,
         sock_read=60
     )
-    session = AiohttpSession(session=ClientSession(timeout=timeout))
+
+    session = AiohttpSession(timeout=timeout)
 
     bot = Bot(
         token=cfg.bot_token,
