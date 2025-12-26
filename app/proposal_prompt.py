@@ -50,10 +50,6 @@ RULES:
   (d) the last question and the Portfolio line
   (e) the Portfolio line and the required closing line (already required)
 
-OUTPUT FORMAT:
-- Wrap the entire final reply in triple backticks (``` ... ```), so it can be copied easily.
-- Do not output anything outside the triple backticks.
-
 OUTPUT STRUCTURE (exact order):
 1) 1 sentence: confirm understanding (1–2 key outcomes) based on DESCRIPTION.
 2) Add exactly one blank line.
@@ -96,34 +92,3 @@ def build_filled_prompt(job: JobData, portfolio_url: str) -> str:
     prompt = prompt.replace("{{DESCRIPTION}}", desc)
     prompt = prompt.replace("{{PORTFOLIO_URL}}", portfolio_url)
     return prompt
-
-
-def format_proposal_prompt_messages(job: JobData, portfolio_url: str) -> List[str]:
-    html.escape(_val(job.job_name))
-    url = html.escape(_val(job.url, default=""))
-
-    prompt = build_filled_prompt(job, portfolio_url)
-    prompt_escaped = html.escape(prompt)
-
-    one = f"<b>Your proposal for the vacancy above ⬆️</b>\n\n<pre>{prompt_escaped}</pre>\n\n{url}"
-    if len(one) <= TG_LIMIT:
-        return [one]
-
-    msgs: List[str] = []
-    chunk_size = 3200
-    chunks = [prompt[i : i + chunk_size] for i in range(0, len(prompt), chunk_size)]
-
-    if not chunks:
-        return [f"<b>Your proposal for the vacancy above ⬆️</b>\n\n<pre>(empty)</pre>\n\n{url}"]
-
-    msgs.append(f"<b>Your proposal for the vacancy above ⬆️</b>\n\n<pre>{html.escape(chunks[0])}</pre>")
-
-    for ch in chunks[1:-1]:
-        msgs.append(f"<pre>{html.escape(ch)}</pre>")
-
-    if len(chunks) > 1:
-        msgs.append(f"<pre>{html.escape(chunks[-1])}</pre>\n\n{url}")
-    else:
-        msgs[0] = msgs[0] + f"\n\n{url}"
-
-    return msgs

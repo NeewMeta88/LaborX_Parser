@@ -12,9 +12,10 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .config import Config
-from .formatter import format_result_messages
+from .formatter import format_result_messages, format_ai_answer_messages
+from .openrouter import openrouter_generate
+from .proposal_prompt import build_filled_prompt
 from .parser import JobData, parser_loop
-from .proposal_prompt import format_proposal_prompt_messages
 from .state import RuntimeState
 
 
@@ -165,28 +166,35 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             return
 
         job = app.jobs.get(callback_data.jid)
-        if job is None:
-            await query.answer("Job data not found (cache expired)")
-            html_text = msg.html_text or msg.text or ""
-            await msg.edit_text(_append_status(html_text, "✅ Accepted"), reply_markup=None, disable_web_page_preview=True)
-            return
-
         html_text = msg.html_text or msg.text or ""
         await msg.edit_text(_append_status(html_text, "✅ Accepted"), reply_markup=None, disable_web_page_preview=True)
 
-        for i, text in enumerate(format_proposal_prompt_messages(job, app.cfg.portfolio_url)):
-            if i == 0:
-                await msg.reply(text, disable_web_page_preview=True)
-            else:
-                await query.bot.send_message(
-                    chat_id=msg.chat.id,
-                    text=text,
-                    disable_web_page_preview=True,
-                )
-            await asyncio.sleep(0.2)
+        if job is None:
+            await query.answer("Job data not found (cache expired)")
+            return
 
-        app._forget_job(callback_data.jid)
-        await query.answer("✅ Accepted")
+        await query.answer("Generating reply...")
+
+        try:
+            prompt = build_filled_prompt(job, app.cfg.portfolio_url)
+            answer = await openrouter_generate(prompt, app.cfg, reasoning_enabled=False)
+
+            for i, text in enumerate(format_ai_answer_messages(job, answer)):
+                if i == 0:
+                    await msg.reply(text, disable_web_page_preview=True)
+                else:
+                    await query.bot.send_message(
+                        chat_id=msg.chat.id,
+                        text=text,
+                        disable_web_page_preview=True,
+                    )
+                await asyncio.sleep(0.2)
+
+        except Exception as e:
+            await msg.reply(f"OpenRouter error: {e}")
+
+        finally:
+            app._forget_job(callback_data.jid)
 
     dp.include_router(router)
     return bot, dp, app
