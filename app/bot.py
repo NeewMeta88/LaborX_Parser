@@ -5,6 +5,7 @@ import html
 import uuid
 from collections import deque
 from datetime import datetime, timezone, timedelta, time
+from urllib.parse import urljoin
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.client.default import DefaultBotProperties
@@ -59,7 +60,7 @@ def next_utc_midnight_local_str() -> str:
 def status_html(app: App, cfg: Config, *, daily_limit, key_info, err) -> str:
     running = app.is_running()
 
-    last_href = app.state.last_seen_href or "—"
+    last_href = urljoin(cfg.list_url, app.state.last_seen_href) or "—"
     last_href = f"<code>{html.escape(last_href)}</code>" if last_href != "—" else "—"
 
     last_error = html.escape(app.state.last_error or "—")
@@ -138,7 +139,7 @@ class App:
 
         self.jobs: dict[str, JobData] = {}
         self.jobs_order: deque[str] = deque()
-        self.jobs_limit: int = 200
+        self.jobs_limit: int = cfg.seen_limit
 
     def _remember_job(self, job: JobData) -> str:
         jid = uuid.uuid4().hex

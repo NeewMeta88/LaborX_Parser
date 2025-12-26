@@ -20,6 +20,7 @@ class RuntimeState:
     ai_utc_day: Optional[date] = None
     startup_chat_id: int | None = None
     startup_message_id: int | None = None
+    max_seen_job_id: int = 0
 
     def __post_init__(self):
         if self.seen_set is None:

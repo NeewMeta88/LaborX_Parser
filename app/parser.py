@@ -1,15 +1,11 @@
 import asyncio
+import re
 from collections import deque
 from dataclasses import dataclass
 from typing import List
 from urllib.parse import urljoin
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-
-LIST_URL = "https://laborx.com/jobs"
-INTERVAL_SECONDS = 600
-MAX_LIST_ITEMS = 5
-SEEN_LIMIT = 50
 
 SEL_FIRST_CARD = ".root.job-card.child-card"
 SEL_CARD_LINK = ".job-title.job-link.row"
@@ -30,6 +26,13 @@ SEL_JOB_INFO_BLOCK = ".job-info-block"
 SEL_PRICE = ".info-item.budget-info .info-value"
 SEL_DAYS = ".info-item.day-info .info-value"
 
+_JOB_ID_RE = re.compile(r"-(\d+)$")
+
+
+def extract_job_id(href: str) -> int | None:
+    m = _JOB_ID_RE.search(href or "")
+    return int(m.group(1)) if m else None
+
 
 @dataclass
 class JobData:
@@ -42,7 +45,7 @@ class JobData:
     url: str
 
 
-async def get_job_hrefs_from_list(page, limit: int = MAX_LIST_ITEMS) -> list[str]:
+async def get_job_hrefs_from_list(page, limit: int) -> list[str]:
     await page.wait_for_selector(SEL_FIRST_CARD, timeout=30_000)
     cards = page.locator(SEL_FIRST_CARD)
     n = min(await cards.count(), limit)
@@ -133,7 +136,7 @@ async def parse_job_page(page) -> JobData:
     )
 
 
-def mark_seen(href: str, seen_hrefs: set[str], seen_order: deque, limit: int = SEEN_LIMIT) -> None:
+def mark_seen(href: str, seen_hrefs: set[str], seen_order: deque, limit: int) -> None:
     if href in seen_hrefs:
         return
     if len(seen_order) >= limit:
@@ -144,12 +147,12 @@ def mark_seen(href: str, seen_hrefs: set[str], seen_order: deque, limit: int = S
 
 
 async def parser_loop(cfg, state, out_queue: asyncio.Queue[JobData], stop_event: asyncio.Event) -> None:
-    list_url = getattr(cfg, "list_url", LIST_URL)
-    interval_seconds = getattr(cfg, "interval_seconds", INTERVAL_SECONDS)
-    max_list_items = getattr(cfg, "max_list_items", MAX_LIST_ITEMS)
-    seen_limit = getattr(cfg, "seen_limit", SEEN_LIMIT)
-    user_data_dir = getattr(cfg, "user_data_dir", "laborx_profile")
-    headless = getattr(cfg, "headless", True)
+    list_url = cfg.list_url
+    interval_seconds = cfg.interval_seconds
+    max_list_items = cfg.max_list_items
+    seen_limit = cfg.seen_limit
+    user_data_dir = cfg.user_data_dir
+    headless = cfg.headless
 
     if getattr(state, "seen_set", None) is None:
         state.seen_set = set()
@@ -157,6 +160,10 @@ async def parser_loop(cfg, state, out_queue: asyncio.Queue[JobData], stop_event:
         state.seen_order = deque()
     if getattr(state, "sent_count", None) is None:
         state.sent_count = 0
+    if getattr(state, "max_seen_job_id", None) is None:
+        state.max_seen_job_id = 0
+    if getattr(state, "last_seen_href", None) is None:
+        state.last_seen_href = None
 
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
@@ -176,16 +183,30 @@ async def parser_loop(cfg, state, out_queue: asyncio.Queue[JobData], stop_event:
                     hrefs = await get_job_hrefs_from_list(page, limit=max_list_items)
 
                     if hrefs:
-                        if state.last_seen_href is None:
-                            candidates = hrefs[:]
-                        else:
-                            if state.last_seen_href in hrefs:
-                                idx = hrefs.index(state.last_seen_href)
-                                candidates = hrefs[:idx]
-                            else:
-                                candidates = hrefs[:]
+                        ids = [extract_job_id(h) for h in hrefs]
+                        ids = [i for i in ids if i is not None]
+                        top_max_id = max(ids) if ids else 0
 
-                        new_hrefs = [h for h in candidates if h not in state.seen_set]
+                        first_run = (state.max_seen_job_id == 0)
+
+                        if first_run:
+                            candidates = hrefs[:]
+                            new_hrefs = [h for h in candidates if h not in state.seen_set]
+                        else:
+                            if state.last_seen_href is None:
+                                candidates = hrefs[:]
+                            else:
+                                if state.last_seen_href in hrefs:
+                                    idx = hrefs.index(state.last_seen_href)
+                                    candidates = hrefs[:idx]
+                                else:
+                                    candidates = hrefs[:]
+
+                            new_hrefs = []
+                            for h in candidates:
+                                jid = extract_job_id(h)
+                                if jid is not None and jid > state.max_seen_job_id and h not in state.seen_set:
+                                    new_hrefs.append(h)
 
                         if new_hrefs:
                             for href in reversed(new_hrefs):
@@ -210,8 +231,8 @@ async def parser_loop(cfg, state, out_queue: asyncio.Queue[JobData], stop_event:
 
                                 await asyncio.sleep(0.8)
 
+                        state.max_seen_job_id = max(state.max_seen_job_id, top_max_id)
                         state.last_seen_href = hrefs[0]
-
                     try:
                         await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
                     except asyncio.TimeoutError:
