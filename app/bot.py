@@ -2,9 +2,12 @@ import asyncio
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.types import Message
+from aiohttp import ClientSession
+from aiohttp.client import ClientTimeout
 
 from .config import Config
 from .parser import parser_loop
@@ -36,10 +39,20 @@ class App:
 
 
 def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
+    timeout = ClientTimeout(
+        total=90,
+        connect=30,
+        sock_connect=30,
+        sock_read=60
+    )
+    session = AiohttpSession(session=ClientSession(timeout=timeout))
+
     bot = Bot(
         token=cfg.bot_token,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
+
     dp = Dispatcher()
     app = App(cfg)
 

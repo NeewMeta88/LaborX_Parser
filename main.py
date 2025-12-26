@@ -8,7 +8,10 @@ async def main():
     load_dotenv()
     cfg = load_config()
     bot, dp, _app = setup_bot(cfg)
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
