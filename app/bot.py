@@ -59,7 +59,7 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             app.sender_task = asyncio.create_task(app.sender_loop(bot))
 
         app.parser_task = asyncio.create_task(parser_loop(cfg, app.state, app.queue, app.stop_event))
-        await message.answer("Запустил парсер. Буду присылать новые вакансии сюда. /status /stop")
+        await message.answer("Parser started. I’ll send new job listings here.")
 
     @router.message(Command("stop"))
     async def cmd_stop(message: Message):
