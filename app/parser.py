@@ -6,8 +6,6 @@ from urllib.parse import urljoin
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
-from .formatter import format_result_messages
-
 LIST_URL = "https://laborx.com/jobs"
 INTERVAL_SECONDS = 600
 MAX_LIST_ITEMS = 5
@@ -145,7 +143,7 @@ def mark_seen(href: str, seen_hrefs: set[str], seen_order: deque, limit: int = S
     seen_hrefs.add(href)
 
 
-async def parser_loop(cfg, state, out_queue: asyncio.Queue[str], stop_event: asyncio.Event) -> None:
+async def parser_loop(cfg, state, out_queue: asyncio.Queue[JobData], stop_event: asyncio.Event) -> None:
     list_url = getattr(cfg, "list_url", LIST_URL)
     interval_seconds = getattr(cfg, "interval_seconds", INTERVAL_SECONDS)
     max_list_items = getattr(cfg, "max_list_items", MAX_LIST_ITEMS)
@@ -201,8 +199,7 @@ async def parser_loop(cfg, state, out_queue: asyncio.Queue[str], stop_event: asy
                                     await page.wait_for_load_state("networkidle")
 
                                     data = await parse_job_page(page)
-                                    for msg in format_result_messages(data):
-                                        await out_queue.put(msg)
+                                    await out_queue.put(data)
                                     state.sent_count += 1
 
                                     mark_seen(href, state.seen_set, state.seen_order, seen_limit)

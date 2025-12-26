@@ -59,6 +59,7 @@ playwright install chromium
 Example:
 ```env
 TG_BOT_TOKEN=123456:ABCDEF...
+PORTFOLIO_URL=https://...
 ```
 
 ---
