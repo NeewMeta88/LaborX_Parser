@@ -60,7 +60,9 @@ def next_utc_midnight_local_str() -> str:
 def status_html(app: App, cfg: Config, *, daily_limit, key_info, err) -> str:
     running = app.is_running()
 
-    last_href = urljoin(cfg.list_url, app.state.last_seen_href) or "—"
+    last_href = "—"
+    if app.state.last_seen_href:
+        last_href = urljoin("https://laborx.com", app.state.last_seen_href)
     last_href = f"<code>{html.escape(last_href)}</code>" if last_href != "—" else "—"
 
     last_error = html.escape(app.state.last_error or "—")
@@ -217,6 +219,12 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             await message.answer("Already running. /status, /stop.")
             return
 
+        app.state.last_seen_href = None
+        app.state.max_seen_job_id = 0
+        app.state.seen_set.clear()
+        app.state.seen_order.clear()
+        app.jobs.clear()
+        app.jobs_order.clear()
         app.stop_event.clear()
         app.state.running = True
         app.state.last_error = None

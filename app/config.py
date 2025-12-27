@@ -8,7 +8,7 @@ class Config:
     portfolio_url: str
     openrouter_api_key: str
     openrouter_model: str
-    list_url: str = "https://laborx.com/jobs?sort=date-desc"
+    list_url: str = "https://laborx.com/jobs"
     interval_seconds: int = 600
     max_list_items: int = 5
     seen_limit: int = 20
