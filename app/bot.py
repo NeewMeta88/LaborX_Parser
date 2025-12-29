@@ -6,6 +6,8 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone, timedelta, time
 from urllib.parse import urljoin
+import re
+import aiohttp
 
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.client.default import DefaultBotProperties
@@ -25,6 +27,57 @@ from .proposal_prompt import build_filled_prompt
 from .state import RuntimeState
 
 router = Router()
+
+JOB_URL_RE = re.compile(r"https?://(?:www\.)?laborx\.com/jobs/[^\s<>()]+", re.IGNORECASE)
+JOBS_LIST_URL_RE = re.compile(r"^https?://(?:www\.)?laborx\.com/jobs/?(?:\?.*)?$", re.IGNORECASE)
+
+PAGE_NOT_FOUND_RE = re.compile(
+    r'class="page-title"[^>]*>.*?class="primary"[^>]*>\s*404\s*<.*?Sorry,\s*page\s*not\s*found\.',
+    re.IGNORECASE | re.DOTALL
+)
+
+def _extract_job_url(text: str) -> str | None:
+    if not text:
+        return None
+    m = JOB_URL_RE.search(text)
+    if not m:
+        return None
+    return m.group(0).rstrip(").,;]}>\n\r\t")
+
+async def _ensure_http_session(app: "App") -> aiohttp.ClientSession:
+    if getattr(app, "http", None) is None or app.http.closed:
+        timeout = aiohttp.ClientTimeout(total=10)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+            )
+        }
+        app.http = aiohttp.ClientSession(timeout=timeout, headers=headers)
+    return app.http
+
+async def _job_page_exists(app: "App", job_url: str) -> bool:
+    try:
+        session = await _ensure_http_session(app)
+        async with session.get(job_url, allow_redirects=True) as resp:
+            if resp.status in (404, 410):
+                return False
+
+            final_url = str(resp.url)
+
+            if resp.history and JOBS_LIST_URL_RE.match(final_url):
+                return False
+
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            if "text/html" in content_type or content_type == "":
+                page_html = await resp.text(errors="ignore")
+                if PAGE_NOT_FOUND_RE.search(page_html):
+                    return False
+
+            return True
+    except Exception:
+        return True
+
 
 
 class JobActionCb(CallbackData, prefix="job"):
@@ -139,6 +192,8 @@ class App:
         self.parser_task: asyncio.Task | None = None
         self.sender_task: asyncio.Task | None = None
 
+        self.http: aiohttp.ClientSession | None = None
+
         self.jobs: dict[str, JobData] = {}
         self.jobs_order: deque[str] = deque()
         self.jobs_limit: int = cfg.seen_limit
@@ -194,7 +249,12 @@ class App:
 
 
 def _append_status(html_text: str, status: str) -> str:
-    if html_text.rstrip().endswith("❌ Skipped") or html_text.rstrip().endswith("✅ Accepted"):
+    already = (
+        "❌ Skipped",
+        "✅ Accepted",
+        "😕 This job is no longer available.",
+    )
+    if any(html_text.rstrip().endswith(s) for s in already):
         return html_text
     return f"{html_text}\n\n{status}"
 
@@ -277,7 +337,18 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             await query.answer("No message")
             return
 
+        job = app.jobs.get(callback_data.jid)
+
         html_text = msg.html_text or msg.text or ""
+        job_url = (job.url if job else None) or _extract_job_url(html_text)
+
+        if job_url and not await _job_page_exists(app, job_url):
+            stale_text = _append_status(html_text, "😕 This job is no longer available.")
+            await msg.edit_text(stale_text, reply_markup=None, disable_web_page_preview=True)
+            app._forget_job(callback_data.jid)
+            await query.answer("Job is no longer available")
+            return
+
         new_text = _append_status(html_text, "❌ Skipped")
         await msg.edit_text(new_text, reply_markup=None, disable_web_page_preview=True)
         app._forget_job(callback_data.jid)
@@ -293,6 +364,14 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
         job = app.jobs.get(callback_data.jid)
         html_text = msg.html_text or msg.text or ""
 
+        job_url = (job.url if job else None) or _extract_job_url(html_text)
+        if job_url and not await _job_page_exists(app, job_url):
+            stale_text = _append_status(html_text, "😕 This job is no longer available.")
+            await msg.edit_text(stale_text, reply_markup=None, disable_web_page_preview=True)
+            app._forget_job(callback_data.jid)
+            await query.answer("Job is no longer available")
+            return
+
         accepted_text = _append_status(html_text, "✅ Accepted")
         await msg.edit_text(
             accepted_text + "\n⏳ Generating reply…",
@@ -301,6 +380,7 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
         )
 
         if job is None:
+            app._forget_job(callback_data.jid)
             await query.answer("Job data not found (cache expired)")
             return
 
@@ -330,13 +410,11 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
                 disable_web_page_preview=True
             )
 
-
         except Exception as e:
             await msg.edit_text(
                 accepted_text + "\n❗ OpenRouter error",
                 reply_markup=None,
                 disable_web_page_preview=True
-
             )
             await msg.reply(f"OpenRouter error: {e}")
         finally:
