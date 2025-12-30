@@ -242,7 +242,7 @@ class App:
                     reply_markup=job_actions_kb(jid) if is_first else None,
                     disable_web_page_preview=True,
                 )
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(1.05)
 
     def is_running(self) -> bool:
         return self.parser_task is not None and not self.parser_task.done()
@@ -402,7 +402,7 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
                         text=text,
                         disable_web_page_preview=True,
                     )
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(1.05)
 
             await msg.edit_text(
                 accepted_text + "\n✅ Reply sent",
