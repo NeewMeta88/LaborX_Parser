@@ -6,6 +6,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone, timedelta, time
 from urllib.parse import urljoin
+from aiogram.exceptions import TelegramNetworkError
 import re
 import aiohttp
 
@@ -35,6 +36,29 @@ PAGE_NOT_FOUND_RE = re.compile(
     r'class="page-title"[^>]*>.*?class="primary"[^>]*>\s*404\s*<.*?Sorry,\s*page\s*not\s*found\.',
     re.IGNORECASE | re.DOTALL
 )
+
+async def safe_reply(msg: Message, text: str, **kwargs) -> bool:
+    try:
+        await msg.reply(text, **kwargs)
+        return True
+    except TelegramNetworkError:
+        return False
+
+async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        return True
+    except TelegramNetworkError:
+        return False
+
+
+async def safe_edit_text(msg: Message, text: str, **kwargs) -> bool:
+    try:
+        await msg.edit_text(text, **kwargs)
+        return True
+    except TelegramNetworkError:
+        return False
+
 
 def _extract_job_url(text: str) -> str | None:
     if not text:
@@ -235,14 +259,26 @@ class App:
             jid = self._remember_job(job)
 
             for i, text in enumerate(parts):
-                is_first = i == 0
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    reply_markup=job_actions_kb(jid) if is_first else None,
-                    disable_web_page_preview=True,
-                )
-                await asyncio.sleep(1.05)
+                for i, text in enumerate(parts):
+                    is_first = i == 0
+
+                    sent = False
+                    for attempt in range(3):
+                        sent = await safe_send(
+                            bot,
+                            chat_id,
+                            text,
+                            reply_markup=job_actions_kb(jid) if is_first else None,
+                            disable_web_page_preview=True,
+                        )
+                        if sent:
+                            break
+                        await asyncio.sleep(5 * (attempt + 1))  # 5s, 10s, 15s
+
+                    if not sent:
+                        continue
+
+                    await asyncio.sleep(1.05)
 
     def is_running(self) -> bool:
         return self.parser_task is not None and not self.parser_task.done()
@@ -338,19 +374,29 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             return
 
         job = app.jobs.get(callback_data.jid)
-
         html_text = msg.html_text or msg.text or ""
         job_url = (job.url if job else None) or _extract_job_url(html_text)
 
         if job_url and not await _job_page_exists(app, job_url):
             stale_text = _append_status(html_text, "😕 This job is no longer available.")
-            await msg.edit_text(stale_text, reply_markup=None, disable_web_page_preview=True)
+            ok = await safe_edit_text(
+                msg,
+                stale_text,
+                reply_markup=None,
+                disable_web_page_preview=True
+            )
+            if not ok:
+                return
+
             app._forget_job(callback_data.jid)
             await query.answer("Job is no longer available")
             return
 
         new_text = _append_status(html_text, "❌ Skipped")
-        await msg.edit_text(new_text, reply_markup=None, disable_web_page_preview=True)
+        ok = await safe_edit_text(msg, new_text, reply_markup=None, disable_web_page_preview=True)
+        if not ok:
+            return
+
         app._forget_job(callback_data.jid)
         await query.answer("❌ Skipped")
 
@@ -367,24 +413,38 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
         job_url = (job.url if job else None) or _extract_job_url(html_text)
         if job_url and not await _job_page_exists(app, job_url):
             stale_text = _append_status(html_text, "😕 This job is no longer available.")
-            await msg.edit_text(stale_text, reply_markup=None, disable_web_page_preview=True)
+            ok = await safe_edit_text(
+                msg,
+                stale_text,
+                reply_markup=None,
+                disable_web_page_preview=True
+            )
+            if not ok:
+                return
+
             app._forget_job(callback_data.jid)
             await query.answer("Job is no longer available")
             return
 
         accepted_text = _append_status(html_text, "✅ Accepted")
-        await msg.edit_text(
+        ok = await safe_edit_text(
+            msg,
             accepted_text + "\n⏳ Generating reply…",
             reply_markup=None,
             disable_web_page_preview=True
         )
+        if not ok:
+            return
 
         if job is None:
             app._forget_job(callback_data.jid)
             await query.answer("Job data not found (cache expired)")
             return
 
-        await query.answer("Generating reply...")
+        try:
+            await query.answer("Generating reply...")
+        except TelegramNetworkError:
+            return
 
         try:
             prompt = build_filled_prompt(job, app.cfg.portfolio_url)
@@ -395,28 +455,46 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
 
             for i, text in enumerate(format_ai_answer_messages(job, answer)):
                 if i == 0:
-                    await msg.reply(text, disable_web_page_preview=True)
+                    ok = await safe_reply(msg, text, disable_web_page_preview=True)
                 else:
-                    await query.bot.send_message(
-                        chat_id=msg.chat.id,
-                        text=text,
-                        disable_web_page_preview=True,
-                    )
+                    ok = await safe_send(query.bot, msg.chat.id, text, disable_web_page_preview=True)
+
+                if not ok:
+                    return
+
                 await asyncio.sleep(1.05)
 
-            await msg.edit_text(
+            ok = await safe_edit_text(
+                msg,
                 accepted_text + "\n✅ Reply sent",
                 reply_markup=None,
                 disable_web_page_preview=True
             )
+            if not ok:
+                return
+
 
         except Exception as e:
-            await msg.edit_text(
+
+            ok = await safe_edit_text(
+
+                msg,
+
                 accepted_text + "\n❗ OpenRouter error",
+
                 reply_markup=None,
+
                 disable_web_page_preview=True
+
             )
-            await msg.reply(f"OpenRouter error: {e}")
+
+            if not ok:
+                return
+
+            ok = await safe_reply(msg, f"OpenRouter error: {e}")
+
+            if not ok:
+                return
         finally:
             app._forget_job(callback_data.jid)
 
