@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from aiogram.exceptions import TelegramNetworkError, TelegramBadRequest
 import asyncio
 import html
 import uuid
@@ -52,10 +52,35 @@ async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
         return False
 
 
+_CB_TOO_OLD_MARKERS = (
+    "query is too old",
+    "response timeout expired",
+    "query id is invalid",
+)
+
+async def safe_answer(query: CallbackQuery, text: str = "", **kwargs) -> bool:
+    try:
+        await query.answer(text, **kwargs)
+        return True
+    except TelegramBadRequest as e:
+        msg = str(e).lower()
+        # Важно: это НЕ причина прекращать обработку клика
+        if any(m in msg for m in _CB_TOO_OLD_MARKERS):
+            return True
+        return False
+    except TelegramNetworkError:
+        return False
+
+
+
 async def safe_edit_text(msg: Message, text: str, **kwargs) -> bool:
     try:
         await msg.edit_text(text, **kwargs)
         return True
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return True
+        return False
     except TelegramNetworkError:
         return False
 
@@ -273,7 +298,7 @@ class App:
                         )
                         if sent:
                             break
-                        await asyncio.sleep(5 * (attempt + 1))  # 5s, 10s, 15s
+                        await asyncio.sleep(5 * (attempt + 1))
 
                     if not sent:
                         continue
@@ -370,8 +395,10 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
     async def on_skip(query: CallbackQuery, callback_data: JobActionCb):
         msg = query.message
         if not msg:
-            await query.answer("No message")
+            await safe_answer(query, "No message")
             return
+
+        await safe_answer(query, "Working...")
 
         job = app.jobs.get(callback_data.jid)
         html_text = msg.html_text or msg.text or ""
@@ -379,17 +406,10 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
 
         if job_url and not await _job_page_exists(app, job_url):
             stale_text = _append_status(html_text, "😕 This job is no longer available.")
-            ok = await safe_edit_text(
-                msg,
-                stale_text,
-                reply_markup=None,
-                disable_web_page_preview=True
-            )
+            ok = await safe_edit_text(msg, stale_text, reply_markup=None, disable_web_page_preview=True)
             if not ok:
                 return
-
             app._forget_job(callback_data.jid)
-            await query.answer("Job is no longer available")
             return
 
         new_text = _append_status(html_text, "❌ Skipped")
@@ -398,14 +418,15 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             return
 
         app._forget_job(callback_data.jid)
-        await query.answer("❌ Skipped")
 
     @router.callback_query(JobActionCb.filter(F.act == "accept"))
     async def on_accept(query: CallbackQuery, callback_data: JobActionCb):
         msg = query.message
         if not msg:
-            await query.answer("No message")
+            await safe_answer(query, "No message")
             return
+
+        await safe_answer(query, "Checking...")
 
         job = app.jobs.get(callback_data.jid)
         html_text = msg.html_text or msg.text or ""
@@ -413,17 +434,10 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
         job_url = (job.url if job else None) or _extract_job_url(html_text)
         if job_url and not await _job_page_exists(app, job_url):
             stale_text = _append_status(html_text, "😕 This job is no longer available.")
-            ok = await safe_edit_text(
-                msg,
-                stale_text,
-                reply_markup=None,
-                disable_web_page_preview=True
-            )
+            ok = await safe_edit_text(msg, stale_text, reply_markup=None, disable_web_page_preview=True)
             if not ok:
                 return
-
             app._forget_job(callback_data.jid)
-            await query.answer("Job is no longer available")
             return
 
         accepted_text = _append_status(html_text, "✅ Accepted")
@@ -438,31 +452,21 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
 
         if job is None:
             app._forget_job(callback_data.jid)
-            await query.answer("Job data not found (cache expired)")
-            return
-
-        try:
-            await query.answer("Generating reply...")
-        except TelegramNetworkError:
+            await safe_answer(query, "Job data not found (cache expired)")
             return
 
         try:
             prompt = build_filled_prompt(job, app.cfg.portfolio_url)
             answer = await openrouter_generate(prompt, app.cfg, state=app.state, reasoning_enabled=False)
 
-            _ensure_ai_day(app.state)
-            app.state.ai_used_today += 1
-
             for i, text in enumerate(format_ai_answer_messages(job, answer)):
                 if i == 0:
                     ok = await safe_reply(msg, text, disable_web_page_preview=True)
                 else:
                     ok = await safe_send(query.bot, msg.chat.id, text, disable_web_page_preview=True)
-
                 if not ok:
                     return
-
-                await asyncio.sleep(1.05)
+                await asyncio.sleep(0.2)
 
             ok = await safe_edit_text(
                 msg,
@@ -473,28 +477,17 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             if not ok:
                 return
 
-
         except Exception as e:
-
             ok = await safe_edit_text(
-
                 msg,
-
                 accepted_text + "\n❗ OpenRouter error",
-
                 reply_markup=None,
-
                 disable_web_page_preview=True
-
             )
-
             if not ok:
                 return
+            await safe_reply(msg, f"OpenRouter error: {e}")
 
-            ok = await safe_reply(msg, f"OpenRouter error: {e}")
-
-            if not ok:
-                return
         finally:
             app._forget_job(callback_data.jid)
 
