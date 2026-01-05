@@ -37,12 +37,23 @@ PAGE_NOT_FOUND_RE = re.compile(
     re.IGNORECASE | re.DOTALL
 )
 
+
+async def retry_bool(fn, *args, attempts: int = 5, base_delay: float = 2.0, **kwargs) -> bool:
+    for i in range(attempts):
+        ok = await fn(*args, **kwargs)
+        if ok:
+            return True
+        await asyncio.sleep(min(base_delay * (2 ** i), 20))
+    return False
+
+
 async def safe_reply(msg: Message, text: str, **kwargs) -> bool:
     try:
         await msg.reply(text, **kwargs)
         return True
     except TelegramNetworkError:
         return False
+
 
 async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
     try:
@@ -58,6 +69,7 @@ _CB_TOO_OLD_MARKERS = (
     "query id is invalid",
 )
 
+
 async def safe_answer(query: CallbackQuery, text: str = "", **kwargs) -> bool:
     try:
         await query.answer(text, **kwargs)
@@ -70,7 +82,6 @@ async def safe_answer(query: CallbackQuery, text: str = "", **kwargs) -> bool:
         return False
     except TelegramNetworkError:
         return False
-
 
 
 async def safe_edit_text(msg: Message, text: str, **kwargs) -> bool:
@@ -93,6 +104,7 @@ def _extract_job_url(text: str) -> str | None:
         return None
     return m.group(0).rstrip(").,;]}>\n\r\t")
 
+
 async def _ensure_http_session(app: "App") -> aiohttp.ClientSession:
     if getattr(app, "http", None) is None or app.http.closed:
         timeout = aiohttp.ClientTimeout(total=10)
@@ -104,6 +116,7 @@ async def _ensure_http_session(app: "App") -> aiohttp.ClientSession:
         }
         app.http = aiohttp.ClientSession(timeout=timeout, headers=headers)
     return app.http
+
 
 async def _job_page_exists(app: "App", job_url: str) -> bool:
     try:
@@ -126,7 +139,6 @@ async def _job_page_exists(app: "App", job_url: str) -> bool:
             return True
     except Exception:
         return True
-
 
 
 class JobActionCb(CallbackData, prefix="job"):
@@ -246,6 +258,9 @@ class App:
         self.jobs: dict[str, JobData] = {}
         self.jobs_order: deque[str] = deque()
         self.jobs_limit: int = cfg.seen_limit
+
+        self.generated_answers: dict[str, str] = {}
+        self.processing: set[str] = set()
 
     def _remember_job(self, job: JobData) -> str:
         jid = uuid.uuid4().hex
@@ -413,83 +428,168 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             return
 
         new_text = _append_status(html_text, "❌ Skipped")
-        ok = await safe_edit_text(msg, new_text, reply_markup=None, disable_web_page_preview=True)
+        ok = await retry_bool(
+            safe_edit_text,
+            msg,
+            new_text,
+            attempts=5,
+            base_delay=1.5,
+            reply_markup=None,
+            disable_web_page_preview=True,
+        )
         if not ok:
+            await safe_answer(query, "Telegram network issue. Try again.", show_alert=True)
             return
 
         app._forget_job(callback_data.jid)
 
     @router.callback_query(JobActionCb.filter(F.act == "accept"))
     async def on_accept(query: CallbackQuery, callback_data: JobActionCb):
-        msg = query.message
-        if not msg:
-            await safe_answer(query, "No message")
+        jid = callback_data.jid
+
+        if jid in app.processing:
+            await safe_answer(query, "Still working...")
             return
 
-        await safe_answer(query, "Checking...")
-
-        job = app.jobs.get(callback_data.jid)
-        html_text = msg.html_text or msg.text or ""
-
-        job_url = (job.url if job else None) or _extract_job_url(html_text)
-        if job_url and not await _job_page_exists(app, job_url):
-            stale_text = _append_status(html_text, "😕 This job is no longer available.")
-            ok = await safe_edit_text(msg, stale_text, reply_markup=None, disable_web_page_preview=True)
-            if not ok:
-                return
-            app._forget_job(callback_data.jid)
-            return
-
-        accepted_text = _append_status(html_text, "✅ Accepted")
-        ok = await safe_edit_text(
-            msg,
-            accepted_text + "\n⏳ Generating reply…",
-            reply_markup=None,
-            disable_web_page_preview=True
-        )
-        if not ok:
-            return
-
-        if job is None:
-            app._forget_job(callback_data.jid)
-            await safe_answer(query, "Job data not found (cache expired)")
-            return
-
+        app.processing.add(jid)
         try:
-            prompt = build_filled_prompt(job, app.cfg.portfolio_url)
-            answer = await openrouter_generate(prompt, app.cfg, state=app.state, reasoning_enabled=False)
+            msg = query.message
+            if not msg:
+                await safe_answer(query, "No message")
+                return
 
+            await safe_answer(query, "Working...")
+
+            html_text = getattr(msg, "html_text", None) or msg.text or ""
+            job = app.jobs.get(jid)
+
+            if job is None:
+                await safe_answer(query, "Job data not found (cache expired)", show_alert=True)
+                return
+
+            job_url = (job.url if job else None) or _extract_job_url(html_text)
+            if job_url and not await _job_page_exists(app, job_url):
+                stale_text = _append_status(html_text, "😕 This job is no longer available.")
+                await retry_bool(
+                    safe_edit_text,
+                    msg,
+                    stale_text,
+                    attempts=3,
+                    base_delay=1.5,
+                    reply_markup=None,
+                    disable_web_page_preview=True,
+                )
+                app.generated_answers.pop(jid, None)
+                app._forget_job(jid)
+                return
+
+            accepted_text = _append_status(html_text, "✅ Accepted")
+
+            await retry_bool(
+                safe_edit_text,
+                msg,
+                accepted_text + "\n⏳ Generating reply…",
+                attempts=5,
+                base_delay=1.5,
+                reply_markup=job_actions_kb(jid),
+                disable_web_page_preview=True,
+            )
+
+            answer = app.generated_answers.get(jid)
+
+            if answer is None:
+                prompt = build_filled_prompt(job, app.cfg.portfolio_url)
+                try:
+                    answer = await asyncio.wait_for(
+                        openrouter_generate(
+                            prompt,
+                            app.cfg,
+                            state=app.state,
+                            reasoning_enabled=False,
+                            timeout_seconds=60,
+                            max_retries=1,
+                        ),
+                        timeout=80,
+                    )
+                except asyncio.TimeoutError:
+                    await retry_bool(
+                        safe_edit_text,
+                        msg,
+                        accepted_text + "\n⚠️ Generation timed out. Tap Accept to retry.",
+                        attempts=3,
+                        base_delay=2.0,
+                        reply_markup=job_actions_kb(jid),
+                        disable_web_page_preview=True,
+                    )
+                    return
+                except Exception as e:
+                    await retry_bool(
+                        safe_edit_text,
+                        msg,
+                        accepted_text + "\n❗ OpenRouter error. Tap Accept to retry.",
+                        attempts=3,
+                        base_delay=2.0,
+                        reply_markup=job_actions_kb(jid),
+                        disable_web_page_preview=True,
+                    )
+                    await safe_reply(msg, f"OpenRouter error: {e}")
+                    return
+
+                app.generated_answers[jid] = answer
+
+            sent_all = True
             for i, text in enumerate(format_ai_answer_messages(job, answer)):
                 if i == 0:
-                    ok = await safe_reply(msg, text, disable_web_page_preview=True)
+                    ok = await retry_bool(
+                        safe_reply,
+                        msg,
+                        text,
+                        attempts=5,
+                        base_delay=2.0,
+                        disable_web_page_preview=True,
+                    )
                 else:
-                    ok = await safe_send(query.bot, msg.chat.id, text, disable_web_page_preview=True)
-                if not ok:
-                    return
-                await asyncio.sleep(0.2)
+                    ok = await retry_bool(
+                        safe_send,
+                        query.bot,
+                        msg.chat.id,
+                        text,
+                        attempts=5,
+                        base_delay=2.0,
+                        disable_web_page_preview=True,
+                    )
 
-            ok = await safe_edit_text(
+                if not ok:
+                    sent_all = False
+                    break
+
+            if not sent_all:
+                await retry_bool(
+                    safe_edit_text,
+                    msg,
+                    accepted_text + "\n⚠️ Telegram send failed. Tap Accept again to retry.",
+                    attempts=3,
+                    base_delay=2.0,
+                    reply_markup=job_actions_kb(jid),
+                    disable_web_page_preview=True,
+                )
+                return
+
+            await retry_bool(
+                safe_edit_text,
                 msg,
                 accepted_text + "\n✅ Reply sent",
+                attempts=3,
+                base_delay=1.5,
                 reply_markup=None,
-                disable_web_page_preview=True
+                disable_web_page_preview=True,
             )
-            if not ok:
-                return
 
-        except Exception as e:
-            ok = await safe_edit_text(
-                msg,
-                accepted_text + "\n❗ OpenRouter error",
-                reply_markup=None,
-                disable_web_page_preview=True
-            )
-            if not ok:
-                return
-            await safe_reply(msg, f"OpenRouter error: {e}")
+            app.generated_answers.pop(jid, None)
+            app._forget_job(jid)
 
         finally:
-            app._forget_job(callback_data.jid)
+            app.processing.discard(jid)
 
     dp.include_router(router)
     return bot, dp, app
