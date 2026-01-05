@@ -408,30 +408,36 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
 
     @router.callback_query(JobActionCb.filter(F.act == "skip"))
     async def on_skip(query: CallbackQuery, callback_data: JobActionCb):
+        jid = callback_data.jid
+
         msg = query.message
         if not msg:
             await safe_answer(query, "No message")
             return
 
-        await safe_answer(query, "Working...")
+        await safe_answer(query, "Skipping...")
 
-        job = app.jobs.get(callback_data.jid)
-        html_text = msg.html_text or msg.text or ""
-        job_url = (job.url if job else None) or _extract_job_url(html_text)
+        html_text = getattr(msg, "html_text", None) or msg.text or ""
 
-        if job_url and not await _job_page_exists(app, job_url):
-            stale_text = _append_status(html_text, "😕 This job is no longer available.")
-            ok = await safe_edit_text(msg, stale_text, reply_markup=None, disable_web_page_preview=True)
-            if not ok:
-                return
-            app._forget_job(callback_data.jid)
-            return
-
-        new_text = _append_status(html_text, "❌ Skipped")
+        skipping_text = _append_status(html_text, "⏳ Skipping…")
         ok = await retry_bool(
             safe_edit_text,
             msg,
-            new_text,
+            skipping_text,
+            attempts=5,
+            base_delay=1.5,
+            reply_markup=job_actions_kb(jid),
+            disable_web_page_preview=True,
+        )
+        if not ok:
+            await safe_answer(query, "Telegram network issue. Try again.", show_alert=True)
+            return
+
+        final_text = _append_status(html_text, "❌ Skipped")
+        ok = await retry_bool(
+            safe_edit_text,
+            msg,
+            final_text,
             attempts=5,
             base_delay=1.5,
             reply_markup=None,
@@ -441,7 +447,8 @@ def setup_bot(cfg: Config) -> tuple[Bot, Dispatcher, App]:
             await safe_answer(query, "Telegram network issue. Try again.", show_alert=True)
             return
 
-        app._forget_job(callback_data.jid)
+        app.generated_answers.pop(jid, None)
+        app._forget_job(jid)
 
     @router.callback_query(JobActionCb.filter(F.act == "accept"))
     async def on_accept(query: CallbackQuery, callback_data: JobActionCb):
